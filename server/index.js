@@ -123,6 +123,7 @@ app.post('/chats/stream', authenticate, upload.single('image'), async (req, res)
   }
 });
 
+// Updated /chats/:chatId/messages endpoint with proper error handling
 app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
   let aiMessage;
   try {
@@ -161,43 +162,42 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
     let fullResponse = '';
     const stream = await createStreamingCompletion(context);
     
-    // 4. Create AI message initially but don't save yet
+    // 4. Create AI message early to catch interruptions
     aiMessage = new Message({
       chat: chatId,
       role: 'assistant',
-      content: '',  // Empty content at the start
+      content: '',
       type: 'text',
     });
+    await aiMessage.save();
 
     // 5. Stream handling with proper error management
     try {
       for await (const chunk of stream) {
         const content = chunk.choices[0]?.delta?.content || '';
         fullResponse += content;
-
-        // Write the streaming data to the client
-        res.write(`data: ${content}\n\n`);
+        
+        // Update AI message incrementally
+        aiMessage.content = fullResponse;
+        await aiMessage.save();
+        
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
       }
     } catch (streamError) {
       console.error('Stream error:', streamError);
+      res.write(`event: error\ndata: ${JSON.stringify({ error: 'Stream interrupted' })}\n\n`);
     } finally {
-      // Finalize the AI message after the stream ends
+      // Finalize AI message
       aiMessage.content = fullResponse;
-
-      // Save the completed AI message to the database
       await aiMessage.save();
-
-      // Add the AI message to the chat and save the chat
       chat.messages.push(aiMessage._id);
       await chat.save();
-
-      // Close the streaming response
       res.end();
     }
 
   } catch (error) {
     console.error('Error:', error);
-    // Cleanup partially created AI message if any error occurs
+    // Cleanup partially created AI message
     if (aiMessage && aiMessage._id) {
       await Message.deleteOne({ _id: aiMessage._id });
     }
