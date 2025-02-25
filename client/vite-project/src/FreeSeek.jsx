@@ -195,7 +195,7 @@ const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMs
       const dataLine = event.split('\n').find(line => line.startsWith('data: '));
       if (dataLine) {
         try {
-          const data = dataLine.slice(6);
+          const data = JSON.parse(dataLine.slice(6));
           aiContent += data.content;
         } catch (error) {
           console.error('Error parsing SSE event:', error);
