@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import { createStreamingCompletion } from './service/deepseek.js';
 import { User, Chat, Message } from './models.js';
-
+export const maxDuration = 300
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -180,7 +180,7 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('X-Accel-Buffering', 'no');
-    res.write(':\n\n'); // Initial flush
+    res.write(':\n\n'); 
 
     // Handle client disconnect
     req.on('close', () => {
