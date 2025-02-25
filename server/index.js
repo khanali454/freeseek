@@ -123,58 +123,52 @@ app.post('/chats/stream', authenticate, upload.single('image'), async (req, res)
   }
 });
 
-
+// Existing chat messages
+// Updated /chats/:chatId/messages endpoint
 app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
   try {
     const { chatId } = req.params;
-    const chat = await Chat.findById(chatId).populate('messages');
+    const chat = await Chat.findById(chatId);
 
-    // Ensure the chat exists and belongs to the authenticated user
     if (!chat || !chat.user.equals(req.user._id)) {
       return res.status(404).json({ error: 'Chat not found' });
     }
 
-    // Ensure content is provided in the request body
-    if (!req.body.content || req.body.content.trim() === '') {
-      return res.status(400).json({ error: 'Message content is required.' });
-    }
-
-    // Create user message with the provided content
+    // Create and save user message
     const userMessage = new Message({
       chat: chatId,
       role: 'user',
       content: req.body.content,
       type: 'text',
     });
-
     await userMessage.save();
+    
+    // Update chat with new message
     chat.messages.push(userMessage._id);
     await chat.save();
 
-    // Prepare streaming response
+    // Get all messages for context
+    const messages = await Message.find({ chat: chatId }).sort({ createdAt: 1 });
+    const context = messages.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
+
+    // Stream response
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // Generate AI response using the chat history as context
-    const context = chat.messages.map(msg => ({
-      role: msg.role,
-      content: msg.content,
-    }));
-
-    console.log('Context sent to AI service:', context);
-
     const stream = await createStreamingCompletion(context);
     let fullResponse = '';
 
-    // Stream the AI response
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content || '';
       fullResponse += content;
       res.write(`data: ${JSON.stringify({ content })}\n\n`);
     }
 
-    // Save AI response as a message
+    // Save AI response
     const aiMessage = new Message({
       chat: chatId,
       role: 'assistant',

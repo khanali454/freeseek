@@ -148,31 +148,75 @@ const FreeSeek = () => {
   };
 
   // Handle streaming response
-  const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMsgId) => {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let aiContent = '';
+  // const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMsgId) => {
+  //   const reader = response.body.getReader();
+  //   const decoder = new TextDecoder();
+  //   let aiContent = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+  //   while (true) {
+  //     const { done, value } = await reader.read();
+  //     if (done) break;
 
-      aiContent += decoder.decode(value, { stream: true });
+  //     aiContent += decoder.decode(value, { stream: true });
 
-      setChats(prevChats => prevChats.map(chat =>
-        chat._id === (isNewChat ? tempChatId : activeChatId) ? {
-          ...chat,
-          messages: chat.messages.map(msg =>
-            msg._id === tempAiMsgId ? {
-              ...msg,
-              content: aiContent,
-              isStreaming: !done
-            } : msg
-          )
-        } : chat
-      ));
+  //     setChats(prevChats => prevChats.map(chat =>
+  //       chat._id === (isNewChat ? tempChatId : activeChatId) ? {
+  //         ...chat,
+  //         messages: chat.messages.map(msg =>
+  //           msg._id === tempAiMsgId ? {
+  //             ...msg,
+  //             content: aiContent,
+  //             isStreaming: !done
+  //           } : msg
+  //         )
+  //       } : chat
+  //     ));
+  //   }
+  // };
+
+  // Updated handleStreamingResponse function
+const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMsgId) => {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let aiContent = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    
+    // Process complete SSE events
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+
+    for (const event of events) {
+      const dataLine = event.split('\n').find(line => line.startsWith('data: '));
+      if (dataLine) {
+        try {
+          const data = JSON.parse(dataLine.slice(6));
+          aiContent += data.content;
+        } catch (error) {
+          console.error('Error parsing SSE event:', error);
+        }
+      }
     }
-  };
+
+    setChats(prevChats => prevChats.map(chat =>
+      chat._id === (isNewChat ? tempChatId : activeChatId) ? {
+        ...chat,
+        messages: chat.messages.map(msg =>
+          msg._id === tempAiMsgId ? {
+            ...msg,
+            content: aiContent,
+            isStreaming: !done
+          } : msg
+        )
+      } : chat
+    ));
+  }
+};
 
   // Rollback optimistic updates
   const rollbackOptimisticUpdates = (isNewChat, tempChatId, tempUserMsgId) => {
@@ -216,17 +260,7 @@ const FreeSeek = () => {
       <div className="text-gray-500 text-sm border-l-2 border-gray-300 pl-2 my-2">
         {props.children}
       </div>
-    ),
-    div: ({ node, className, ...props }) => {
-      if (className === 'think') {
-        return (
-          <div className="text-gray-500 text-sm border-l-2 border-gray-300 pl-2 my-2">
-            {props.children}
-          </div>
-        );
-      }
-      return <div {...props} />;
-    }
+    )
   };
 
   const activeChat = chats.find(chat => chat._id === activeChatId);
@@ -309,10 +343,7 @@ const FreeSeek = () => {
                     remarkPlugins={[remarkGfm]}
                     rehypePlugins={[rehypeRaw]}
                   >
-                    {message.content
-                      .replace(/<think>/g, '<div class="think">')
-                      .replace(/<\/think>/g, '</div>')
-                    }
+                    {message.content}
                   </ReactMarkdown>
                   {message.isStreaming && (
                     <span className="ml-2 animate-blink">...</span>
