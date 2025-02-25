@@ -7,7 +7,6 @@ import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import { createStreamingCompletion } from './service/deepseek.js';
 import { User, Chat, Message } from './models.js';
-export const maxDuration = 300
 const app = express();
 app.use(cors());
 app.use(express.json());
