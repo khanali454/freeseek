@@ -205,31 +205,14 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
   }
 });
 
-// Updated GET /chats endpoint with proper population
+
+// Get all chats
 app.get('/chats', authenticate, async (req, res) => {
   try {
     const chats = await Chat.find({ user: req.user._id })
       .sort({ createdAt: -1 })
-      .populate({
-        path: 'messages',
-        options: { 
-          sort: { createdAt: 1 },
-          // Only get the first and last messages for preview
-          perDocumentLimit: 2,
-          transform: doc => ({
-            id: doc._id,
-            content: doc.content.substring(0, 100),
-            role: doc.role,
-            createdAt: doc.createdAt
-          })
-        }
-      });
-      
-    res.json(chats.map(chat => ({
-      ...chat.toObject(),
-      // Generate title from first message if missing
-      title: chat.title || chat.messages[0]?.content || 'New Chat'
-    })));
+      .populate('messages');
+    res.json(chats);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
