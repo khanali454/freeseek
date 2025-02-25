@@ -62,17 +62,18 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// New chat with streaming
+// Fixed streaming endpoint with proper cleanup and error handling
 app.post('/chats/stream', authenticate, upload.single('image'), async (req, res) => {
+  let newChat, userMessage;
   try {
     // Create new chat
-    const newChat = new Chat({
+    newChat = new Chat({
       user: req.user._id,
       title: req.body.content?.substring(0, 50) || 'New Chat',
     });
 
     // Create user message
-    const userMessage = new Message({
+    userMessage = new Message({
       chat: newChat._id,
       role: 'user',
       content: req.file ? `/uploads/${req.file.filename}` : req.body.content,
@@ -87,10 +88,18 @@ app.post('/chats/stream', authenticate, upload.single('image'), async (req, res)
     req.user.chats.push(newChat._id);
     await req.user.save();
 
-    // Prepare streaming response
+    // Setup streaming response
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    
+    // Immediate flush to establish connection
+    res.write(':\n\n');
+
+    // Handle client disconnect
+    req.on('close', () => {
+      stream.controller?.abort();
+    });
 
     // Get AI response
     const stream = await createStreamingCompletion([{
@@ -105,6 +114,9 @@ app.post('/chats/stream', authenticate, upload.single('image'), async (req, res)
       res.write(`data: ${JSON.stringify({ content, chatId: newChat._id })}\n\n`);
     }
 
+    // Final message
+    res.write(`event: end\ndata: ${JSON.stringify({ done: true })}\n\n`);
+
     // Save AI message
     const aiMessage = new Message({
       chat: newChat._id,
@@ -116,16 +128,26 @@ app.post('/chats/stream', authenticate, upload.single('image'), async (req, res)
     newChat.messages.push(aiMessage._id);
     await newChat.save();
 
-    res.end();
   } catch (error) {
     console.error('Error:', error);
-    res.status(500).json({ error: error.message });
+    // Cleanup partial chat if error occurs
+    if (newChat?._id) {
+      await Chat.deleteOne({ _id: newChat._id });
+      await Message.deleteMany({ chat: newChat._id });
+      await User.updateOne(
+        { _id: req.user._id },
+        { $pull: { chats: newChat._id } }
+      );
+    }
+    res.write(`event: error\ndata: ${JSON.stringify({ error: error.message })}\n\n`);
+  } finally {
+    res.end();
   }
 });
 
-// Updated /chats/:chatId/messages endpoint with proper error handling
+// Improved streaming messages endpoint
 app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
-  let aiMessage;
+  let aiMessage, stream;
   try {
     const { chatId } = req.params;
     const chat = await Chat.findById(chatId);
@@ -134,7 +156,7 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Chat not found' });
     }
 
-    // 1. Save user message first
+    // Save user message
     const userMessage = new Message({
       chat: chatId,
       role: 'user',
@@ -145,7 +167,7 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
     chat.messages.push(userMessage._id);
     await chat.save();
 
-    // 2. Get complete message history
+    // Get message history
     const messages = await Message.find({ chat: chatId })
       .sort({ createdAt: 1 })
       .lean();
@@ -154,15 +176,18 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
       content: msg.content
     }));
 
-    // 3. Setup streaming response
+    // Setup streaming response
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    
-    let fullResponse = '';
-    const stream = await createStreamingCompletion(context);
-    
-    // 4. Create AI message early to catch interruptions
+    res.write(':\n\n'); // Initial flush
+
+    // Handle client disconnect
+    req.on('close', () => {
+      stream?.controller?.abort();
+    });
+
+    // Create empty AI message
     aiMessage = new Message({
       chat: chatId,
       role: 'assistant',
@@ -171,44 +196,37 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
     });
     await aiMessage.save();
 
-    // 5. Stream handling with proper error management
-    try {
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || '';
-        fullResponse += content;
-        
-        // Update AI message incrementally
-        aiMessage.content = fullResponse;
-        await aiMessage.save();
-        
-        res.write(`event: update\n\n`);
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
-      }
-
-      res.write(`event: <STREAMING_ENDED_NOW>\n\n`);
-      res.write(`data: ${JSON.stringify({ "content":"" })}\n\n`);
-    } catch (streamError) {
-      console.error('Stream error:', streamError);
-      res.write(`event: error\ndata: ${JSON.stringify({ error: 'Stream interrupted' })}\n\n`);
-    } finally {
-      // Finalize AI message
+    // Start streaming
+    stream = await createStreamingCompletion(context);
+    let fullResponse = '';
+    
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      fullResponse += content;
+      
+      // Update incrementally
       aiMessage.content = fullResponse;
       await aiMessage.save();
-      chat.messages.push(aiMessage._id);
-      await chat.save();
-      res.end();
+      
+      res.write(`data: ${JSON.stringify({ content })}\n\n`);
     }
+
+    // Finalize
+    res.write(`event: end\ndata: {}\n\n`);
+    chat.messages.push(aiMessage._id);
+    await chat.save();
 
   } catch (error) {
     console.error('Error:', error);
-    // Cleanup partially created AI message
-    if (aiMessage && aiMessage._id) {
+    // Cleanup AI message if error occurs
+    if (aiMessage?._id) {
       await Message.deleteOne({ _id: aiMessage._id });
     }
-    res.status(500).json({ error: error.message });
+    res.write(`event: error\ndata: ${JSON.stringify({ error: error.message })}\n\n`);
+  } finally {
+    res.end();
   }
 });
-
 
 // Get all chats
 app.get('/chats', authenticate, async (req, res) => {
