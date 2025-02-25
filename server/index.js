@@ -181,11 +181,10 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
         aiMessage.content = fullResponse;
         await aiMessage.save();
         
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        res.write(`data: ${ content }\n\n`);
       }
     } catch (streamError) {
       console.error('Stream error:', streamError);
-      res.write(`event: error\ndata: ${JSON.stringify({ error: 'Stream interrupted' })}\n\n`);
     } finally {
       // Finalize AI message
       aiMessage.content = fullResponse;
