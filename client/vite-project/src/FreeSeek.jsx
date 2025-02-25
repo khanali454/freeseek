@@ -6,26 +6,25 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import rehypeRaw from 'rehype-raw';
 import { useNavigate } from 'react-router';
 
-
-
 const FreeSeek = () => {
-  const navigate = useNavigate();
+  const history = useNavigate();
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  // Check if user is authenticated
+  // Authentication check
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (!token) {
-      navigate('/login');
+      history.push('/login');
     } else {
       fetchChats();
     }
-  }, [navigate]);
+  }, [history]);
 
-  // Fetch all chats for the logged-in user
+  // Fetch user's chats
   const fetchChats = async () => {
     try {
       const response = await fetch('https://freeseek-server.vercel.app/chats', {
@@ -33,129 +32,161 @@ const FreeSeek = () => {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
         },
       });
-      if (!response.ok) throw new Error('Failed to fetch chats');
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem('token');
+          history.push('/login');
+        } else if (response.status === 504) {
+          throw new Error('Server is taking too long to respond. Please try again later.');
+        } else {
+          throw new Error(`Failed to fetch chats: ${response.statusText}`);
+        }
+      }
+
       const data = await response.json();
       setChats(data);
-      setActiveChatId(data[0]?._id || null); // Use _id from MongoDB
+      setActiveChatId(data[0]?._id);
     } catch (error) {
       console.error('Error fetching chats:', error);
+      setError(error.message);
     }
   };
 
-  // Create a new chat
-  const createNewChat = async () => {
-    try {
-      const response = await fetch('https://freeseek-server.vercel.app/chats', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-        body: JSON.stringify({ title: `Chat ${chats.length + 1}` }),
-      });
-      if (!response.ok) throw new Error('Failed to create chat');
-      const newChat = await response.json();
-      setChats([newChat, ...chats]);
-      setActiveChatId(newChat._id);
-    } catch (error) {
-      console.error('Error creating chat:', error);
-    }
-  };
-
-  // Send a message to the active chat
+  // Handle message submission
   const handleSendMessage = async () => {
-    if (!newMessage.trim() || !activeChatId) return;
+    if (!newMessage.trim() || loading) return;
+
+    const isNewChat = !activeChatId;
+    const tempChatId = `temp-${Date.now()}`;
+    const tempUserMsgId = Date.now();
+    const tempAiMsgId = Date.now() + 1;
 
     try {
       setLoading(true);
+      setError(null);
 
-      // Add user message to the chat
-      const userMessage = {
-        role: 'user',
-        content: newMessage,
-        type: 'text',
-      };
+      // Optimistic UI update
+      updateChatsOptimistically(isNewChat, tempChatId, tempUserMsgId, tempAiMsgId);
+
+      // Determine API endpoint
+      const endpoint = isNewChat ? '/chats/stream' : `/chats/${activeChatId}/messages`;
 
       const response = await fetch(
-        `https://freeseek-server.vercel.app/chats/${activeChatId}/messages`,
+        `https://freeseek-server.vercel.app${endpoint}`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${localStorage.getItem('token')}`,
           },
-          body: JSON.stringify(userMessage),
+          body: JSON.stringify({ content: newMessage }),
         }
       );
 
-      if (!response.ok) throw new Error('Failed to send message');
+      if (!response.ok) {
+        if (response.status === 504) {
+          throw new Error('Server is taking too long to respond. Please try again later.');
+        } else {
+          throw new Error(`Failed to send message: ${response.statusText}`);
+        }
+      }
 
       // Handle streaming response
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let result = '';
+      await handleStreamingResponse(response, isNewChat, tempChatId, tempAiMsgId);
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        result += decoder.decode(value, { stream: true });
-
-        // Update the chat with the streaming response
-        setChats((prevChats) =>
-          prevChats.map((chat) =>
-            chat._id === activeChatId
-              ? {
-                  ...chat,
-                  messages: [
-                    ...chat.messages,
-                    { role: 'assistant', content: result, type: 'text' },
-                  ],
-                }
-              : chat
-          )
-        );
-      }
+      // Refresh chat list for new chats
+      if (isNewChat) await fetchChats();
     } catch (error) {
-      console.error('Error sending message:', error);
+      console.error('Error:', error);
+      setError(error.message);
+      rollbackOptimisticUpdates(isNewChat, tempChatId, tempUserMsgId);
     } finally {
       setLoading(false);
       setNewMessage('');
     }
   };
 
-  // Handle image upload
-  const handleImageUpload = async (file) => {
-    try {
-      const formData = new FormData();
-      formData.append('image', file);
+  // Optimistic UI update
+  const updateChatsOptimistically = (isNewChat, tempChatId, tempUserMsgId, tempAiMsgId) => {
+    const newMessageObj = {
+      _id: tempUserMsgId,
+      role: 'user',
+      content: newMessage,
+      createdAt: new Date().toISOString(),
+    };
 
-      const response = await fetch(
-        `https://freeseek-server.vercel.app/chats/${activeChatId}/messages`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('token')}`,
-          },
-          body: formData,
-        }
-      );
+    if (isNewChat) {
+      const tempChat = {
+        _id: tempChatId,
+        title: newMessage,
+        messages: [newMessageObj],
+        createdAt: new Date().toISOString(),
+      };
+      setChats([tempChat, ...chats]);
+      setActiveChatId(tempChatId);
+    } else {
+      setChats(chats.map(chat =>
+        chat._id === activeChatId ?
+          { ...chat, messages: [...chat.messages, newMessageObj] } :
+          chat
+      ));
+    }
 
-      if (!response.ok) throw new Error('Failed to upload image');
+    // Add temporary AI message
+    setChats(prevChats => prevChats.map(chat =>
+      chat._id === (isNewChat ? tempChatId : activeChatId) ? {
+        ...chat,
+        messages: [...chat.messages, {
+          _id: tempAiMsgId,
+          role: 'assistant',
+          content: '',
+          isStreaming: true
+        }]
+      } : chat
+    ));
+  };
 
-      const newMessage = await response.json();
-      setChats((prevChats) =>
-        prevChats.map((chat) =>
-          chat._id === activeChatId
-            ? { ...chat, messages: [...chat.messages, newMessage] }
-            : chat
-        )
-      );
-    } catch (error) {
-      console.error('Error uploading image:', error);
+  // Handle streaming response
+  const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMsgId) => {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let aiContent = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      aiContent += decoder.decode(value, { stream: true });
+
+      setChats(prevChats => prevChats.map(chat =>
+        chat._id === (isNewChat ? tempChatId : activeChatId) ? {
+          ...chat,
+          messages: chat.messages.map(msg =>
+            msg._id === tempAiMsgId ? {
+              ...msg,
+              content: aiContent,
+              isStreaming: !done
+            } : msg
+          )
+        } : chat
+      ));
     }
   };
 
-  // Markdown components for rendering messages
+  // Rollback optimistic updates
+  const rollbackOptimisticUpdates = (isNewChat, tempChatId, tempUserMsgId) => {
+    setChats(prevChats => isNewChat ?
+      prevChats.filter(chat => chat._id !== tempChatId) :
+      prevChats.map(chat =>
+        chat._id === activeChatId ?
+          { ...chat, messages: chat.messages.filter(m => m._id !== tempUserMsgId) } :
+          chat
+      )
+    );
+  };
+
+  // Custom Markdown components
   const MarkdownComponents = {
     code({ node, inline, className, children, ...props }) {
       const match = /language-(\w+)/.exec(className || '');
@@ -181,25 +212,41 @@ const FreeSeek = () => {
     a: ({ node, ...props }) => (
       <a {...props} className="text-purple-600 hover:underline" target="_blank" rel="noreferrer" />
     ),
+    think: ({ node, ...props }) => (
+      <div className="text-gray-500 text-sm border-l-2 border-gray-300 pl-2 my-2">
+        {props.children}
+      </div>
+    ),
+    div: ({ node, className, ...props }) => {
+      if (className === 'think') {
+        return (
+          <div className="text-gray-500 text-sm border-l-2 border-gray-300 pl-2 my-2">
+            {props.children}
+          </div>
+        );
+      }
+      return <div {...props} />;
+    }
   };
 
-  const activeChat = chats.find((chat) => chat._id === activeChatId);
+  const activeChat = chats.find(chat => chat._id === activeChatId);
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-purple-50 to-indigo-50">
-      {/* Left Sidebar */}
+      {/* Chat List Sidebar */}
       <div className="w-64 bg-white shadow-xl flex flex-col border-r border-purple-200">
         <div className="p-4 border-b border-purple-200">
           <button
-            onClick={createNewChat}
+            onClick={() => setActiveChatId(null)}
             className="w-full bg-gradient-to-br from-purple-600 to-indigo-600 text-white rounded-xl py-3 px-4 
               hover:from-purple-700 hover:to-indigo-700 transition-all duration-200 shadow-md hover:shadow-lg
               flex items-center justify-center gap-2"
+            aria-label="Start new chat"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z" />
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/>
             </svg>
-            New chat
+            New Chat
           </button>
         </div>
 
@@ -229,7 +276,7 @@ const FreeSeek = () => {
         <div className="border-b border-purple-200 p-4 flex items-center justify-between bg-white/80 backdrop-blur-sm">
           <div className="text-2xl font-bold text-purple-900 flex items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-purple-600" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/>
             </svg>
             FreeSeek
           </div>
@@ -238,16 +285,16 @@ const FreeSeek = () => {
         {/* Chat Messages */}
         <div className="flex-1 flex flex-col p-4 overflow-y-auto">
           <div className="max-w-3xl w-full mx-auto space-y-4">
-            {activeChat?.messages?.map((message, index) => (
+            {activeChat?.messages?.map((message) => (
               <div
-                key={index}
+                key={message._id}
                 className={`flex ${message.role === 'assistant' ? 'items-start' : 'justify-end'} gap-4`}
               >
                 {message.role === 'assistant' && (
                   <div className="w-10 h-10 bg-gradient-to-br from-purple-600 to-indigo-600 rounded-xl 
                     flex items-center justify-center text-white shadow-md">
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M19 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h4l3 3 3-3h4c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-6 16h-2v-2h2v2zm2.1-5.37l-.71.71c-.2.2-.51.2-.71 0l-.71-.71c-.2-.2-.2-.51 0-.71l1.41-1.41c.2-.2.51-.2.71 0l1.41 1.41c.2.2.2.51 0 .71l-.71.71zM18 10h-2V8h2v2z" />
+                      <path d="M19 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h4l3 3 3-3h4c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-6 16h-2v-2h2v2zm2.1-5.37l-.71.71c-.2.2-.51.2-.71 0l-.71-.71c-.2-.2-.2-.51 0-.71l1.41-1.41c.2-.2.51-.2.71 0l1.41 1.41c.2.2.2.51 0 .71l-.71.71zM18 10h-2V8h2v2z"/>
                     </svg>
                   </div>
                 )}
@@ -256,23 +303,19 @@ const FreeSeek = () => {
                   message.role === 'assistant' 
                     ? 'bg-white border border-gray-100' 
                     : 'bg-gradient-to-br from-purple-600 to-indigo-600 text-white'
-                }`}>
-                  {message.type === 'image' ? (
-                    <img 
-                      src={message.content} 
-                      className="max-w-full h-auto rounded-lg"
-                      alt="User content"
-                    />
-                  ) : (
-                    <div className={message.role === 'assistant' ? 'text-gray-700' : 'text-white'}>
-                      <ReactMarkdown
-                        components={MarkdownComponents}
-                        remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[rehypeRaw]}
-                      >
-                        {message.content}
-                      </ReactMarkdown>
-                    </div>
+                } ${message.isStreaming ? 'animate-pulse' : ''}`}>
+                  <ReactMarkdown
+                    components={MarkdownComponents}
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeRaw]}
+                  >
+                    {message.content
+                      .replace(/<think>/g, '<div class="think">')
+                      .replace(/<\/think>/g, '</div>')
+                    }
+                  </ReactMarkdown>
+                  {message.isStreaming && (
+                    <span className="ml-2 animate-blink">...</span>
                   )}
                 </div>
               </div>
@@ -283,31 +326,21 @@ const FreeSeek = () => {
         {/* Input Area */}
         <div className="border-t border-purple-200 p-4 bg-white/80 backdrop-blur-sm">
           <div className="max-w-3xl mx-auto relative">
-            <div className="flex gap-2 mb-2">
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => handleImageUpload(e.target.files[0])}
-                className="hidden"
-                id="image-upload"
-                disabled={loading}
-              />
-              <label
-                htmlFor="image-upload"
-                className="p-2 rounded-xl bg-purple-100 hover:bg-purple-200 cursor-pointer transition-colors"
-              >
-                <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-              </label>
-            </div>
-
+            {error && (
+              <div className="text-red-500 text-sm mb-2">
+                {error}
+              </div>
+            )}
             <div className="relative">
               <input
                 type="text"
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    handleSendMessage();
+                  }
+                }}
                 placeholder="Type your message here..."
                 className="w-full rounded-2xl border-2 border-purple-200 py-4 pl-6 pr-24 
                   focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-100
@@ -321,6 +354,7 @@ const FreeSeek = () => {
                   hover:opacity-90 transition-all duration-200 shadow-md flex items-center justify-center
                   disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={loading}
+                aria-label="Send message"
               >
                 {loading ? (
                   <div className="h-6 w-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
