@@ -25,6 +25,7 @@ export const createStreamingCompletion = async (messages) => {
     const stream = await openai.chat.completions.create({
       messages: messages,
       model: "deepseek-chat",
+      max_tokens:8192,
       stream: true,
     });
 
