@@ -123,9 +123,9 @@ app.post('/chats/stream', authenticate, upload.single('image'), async (req, res)
   }
 });
 
-// Existing chat messages
-// Updated /chats/:chatId/messages endpoint
+// Updated /chats/:chatId/messages endpoint with proper error handling
 app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
+  let aiMessage;
   try {
     const { chatId } = req.params;
     const chat = await Chat.findById(chatId);
@@ -134,7 +134,7 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Chat not found' });
     }
 
-    // Create and save user message
+    // 1. Save user message first
     const userMessage = new Message({
       chat: chatId,
       role: 'user',
@@ -142,58 +142,94 @@ app.post('/chats/:chatId/messages', authenticate, async (req, res) => {
       type: 'text',
     });
     await userMessage.save();
-    
-    // Update chat with new message
     chat.messages.push(userMessage._id);
     await chat.save();
 
-    // Get all messages for context
-    const messages = await Message.find({ chat: chatId }).sort({ createdAt: 1 });
+    // 2. Get complete message history
+    const messages = await Message.find({ chat: chatId })
+      .sort({ createdAt: 1 })
+      .lean();
     const context = messages.map(msg => ({
       role: msg.role,
       content: msg.content
     }));
 
-    // Stream response
+    // 3. Setup streaming response
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-
-    const stream = await createStreamingCompletion(context);
+    
     let fullResponse = '';
-
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
-      fullResponse += content;
-      res.write(`data: ${JSON.stringify({ content })}\n\n`);
-    }
-
-    // Save AI response
-    const aiMessage = new Message({
+    const stream = await createStreamingCompletion(context);
+    
+    // 4. Create AI message early to catch interruptions
+    aiMessage = new Message({
       chat: chatId,
       role: 'assistant',
-      content: fullResponse,
+      content: '',
       type: 'text',
     });
     await aiMessage.save();
-    chat.messages.push(aiMessage._id);
-    await chat.save();
 
-    res.end();
+    // 5. Stream handling with proper error management
+    try {
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || '';
+        fullResponse += content;
+        
+        // Update AI message incrementally
+        aiMessage.content = fullResponse;
+        await aiMessage.save();
+        
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
+    } catch (streamError) {
+      console.error('Stream error:', streamError);
+      res.write(`event: error\ndata: ${JSON.stringify({ error: 'Stream interrupted' })}\n\n`);
+    } finally {
+      // Finalize AI message
+      aiMessage.content = fullResponse;
+      await aiMessage.save();
+      chat.messages.push(aiMessage._id);
+      await chat.save();
+      res.end();
+    }
+
   } catch (error) {
     console.error('Error:', error);
+    // Cleanup partially created AI message
+    if (aiMessage && aiMessage._id) {
+      await Message.deleteOne({ _id: aiMessage._id });
+    }
     res.status(500).json({ error: error.message });
   }
 });
 
-
-// Get all chats
+// Updated GET /chats endpoint with proper population
 app.get('/chats', authenticate, async (req, res) => {
   try {
     const chats = await Chat.find({ user: req.user._id })
       .sort({ createdAt: -1 })
-      .populate('messages');
-    res.json(chats);
+      .populate({
+        path: 'messages',
+        options: { 
+          sort: { createdAt: 1 },
+          // Only get the first and last messages for preview
+          perDocumentLimit: 2,
+          transform: doc => ({
+            id: doc._id,
+            content: doc.content.substring(0, 100),
+            role: doc.role,
+            createdAt: doc.createdAt
+          })
+        }
+      });
+      
+    res.json(chats.map(chat => ({
+      ...chat.toObject(),
+      // Generate title from first message if missing
+      title: chat.title || chat.messages[0]?.content || 'New Chat'
+    })));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
