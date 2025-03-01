@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import he from 'he';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -18,26 +19,27 @@ const FreeSeek = () => {
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (!token) {
-      history.push('/login');
+      history('/login');
     } else {
       fetchChats();
     }
   }, [history]);
 
+
   // Fetch user's chats
   const fetchChats = async () => {
     try {
-      const response = await fetch('https://freeseek-server.vercel.app/chats', {
+      const response = await fetch('https://freeseek-server-fmbbc2bbftb6a7he.canadacentral-01.azurewebsites.net/chats', {
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
         },
       });
 
       if (!response.ok) {
-        if (response.status === 401) {
+        if (response.status == 401) {
           localStorage.removeItem('token');
           history.push('/login');
-        } else if (response.status === 504) {
+        } else if (response.status == 504) {
           throw new Error('Server is taking too long to respond. Please try again later.');
         } else {
           throw new Error(`Failed to fetch chats: ${response.statusText}`);
@@ -64,6 +66,8 @@ const FreeSeek = () => {
 
     try {
       setLoading(true);
+
+
       setError(null);
 
       // Optimistic UI update
@@ -73,7 +77,7 @@ const FreeSeek = () => {
       const endpoint = isNewChat ? '/chats/stream' : `/chats/${activeChatId}/messages`;
 
       const response = await fetch(
-        `https://freeseek-server.vercel.app${endpoint}`,
+        `https://freeseek-server-fmbbc2bbftb6a7he.canadacentral-01.azurewebsites.net${endpoint}`,
         {
           method: 'POST',
           headers: {
@@ -147,76 +151,50 @@ const FreeSeek = () => {
     ));
   };
 
-  // Handle streaming response
-  // const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMsgId) => {
-  //   const reader = response.body.getReader();
-  //   const decoder = new TextDecoder();
-  //   let aiContent = '';
-
-  //   while (true) {
-  //     const { done, value } = await reader.read();
-  //     if (done) break;
-
-  //     aiContent += decoder.decode(value, { stream: true });
-
-  //     setChats(prevChats => prevChats.map(chat =>
-  //       chat._id === (isNewChat ? tempChatId : activeChatId) ? {
-  //         ...chat,
-  //         messages: chat.messages.map(msg =>
-  //           msg._id === tempAiMsgId ? {
-  //             ...msg,
-  //             content: aiContent,
-  //             isStreaming: !done
-  //           } : msg
-  //         )
-  //       } : chat
-  //     ));
-  //   }
-  // };
 
   // Updated handleStreamingResponse function
-const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMsgId) => {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let aiContent = '';
+  const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMsgId) => {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let aiContent = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    
-    // Process complete SSE events
-    const events = buffer.split('\n\n');
-    buffer = events.pop() || '';
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
 
-    for (const event of events) {
-      const dataLine = event.split('\n').find(line => line.startsWith('data: '));
-      if (dataLine) {
-        try {
-          const data = JSON.parse(dataLine.slice(6));
-          aiContent += data.content;
-        } catch (error) {
-          console.error('Error parsing SSE event:', error);
+      // Process complete SSE events
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+
+      for (const event of events) {
+        const dataLine = event.split('\n').find(line => line.startsWith('data: '));
+        if (dataLine) {
+          try {
+            const data = JSON.parse(dataLine.slice(6));
+            aiContent += data.content;
+          } catch (error) {
+            console.error('Error parsing SSE event:', error);
+          }
         }
       }
-    }
 
-    setChats(prevChats => prevChats.map(chat =>
-      chat._id === (isNewChat ? tempChatId : activeChatId) ? {
-        ...chat,
-        messages: chat.messages.map(msg =>
-          msg._id === tempAiMsgId ? {
-            ...msg,
-            content: aiContent,
-            isStreaming: !done
-          } : msg
-        )
-      } : chat
-    ));
-  }
-};
+      setChats(prevChats => prevChats.map(chat =>
+        chat._id === (isNewChat ? tempChatId : activeChatId) ? {
+          ...chat,
+          messages: chat.messages.map(msg =>
+            msg._id === tempAiMsgId ? {
+              ...msg,
+              content: aiContent,
+              isStreaming: !done
+            } : msg
+          )
+        } : chat
+      ));
+    }
+  };
 
   // Rollback optimistic updates
   const rollbackOptimisticUpdates = (isNewChat, tempChatId, tempUserMsgId) => {
@@ -256,12 +234,16 @@ const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMs
     a: ({ node, ...props }) => (
       <a {...props} className="text-purple-600 hover:underline" target="_blank" rel="noreferrer" />
     ),
-    think: ({ node, ...props }) => (
-      <div className="text-gray-500 text-sm border-l-2 border-gray-300 pl-2 my-2">
-        {props.children}
-      </div>
-    )
+
+
   };
+
+  const Parse = (ct) => {
+    console.log(" total :", ct);
+    let vct = ct.replace('<think>', '<div className="text-gray-500 text-sm border-l-2 border-gray-300 pl-2 my-2"> <b>Thinking: </b>').replace('</think>', '</div>');
+    console.log("vct : ", vct);
+    return vct;
+  }
 
   const activeChat = chats.find(chat => chat._id === activeChatId);
 
@@ -278,7 +260,7 @@ const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMs
             aria-label="Start new chat"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/>
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z" />
             </svg>
             New Chat
           </button>
@@ -290,11 +272,10 @@ const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMs
               key={chat._id}
               onClick={() => setActiveChatId(chat._id)}
               className={`group px-4 py-3 hover:bg-purple-50 cursor-pointer transition-colors
-                border-b border-purple-100 ${activeChatId === chat._id ? 
+                border-b border-purple-100 ${activeChatId === chat._id ?
                   'bg-purple-50 border-l-4 border-purple-500' : ''}`}
             >
-              <div className={`text-gray-700 truncate font-medium ${
-                activeChatId === chat._id ? 'text-purple-900' : ''}`}>
+              <div className={`text-gray-700 truncate font-medium ${activeChatId === chat._id ? 'text-purple-900' : ''}`}>
                 {chat.title}
               </div>
               <div className="text-xs text-gray-500 mt-1">
@@ -310,7 +291,7 @@ const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMs
         <div className="border-b border-purple-200 p-4 flex items-center justify-between bg-white/80 backdrop-blur-sm">
           <div className="text-2xl font-bold text-purple-900 flex items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-purple-600" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/>
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
             </svg>
             FreeSeek
           </div>
@@ -328,27 +309,37 @@ const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMs
                   <div className="w-10 h-10 bg-gradient-to-br from-purple-600 to-indigo-600 rounded-xl 
                     flex items-center justify-center text-white shadow-md">
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M19 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h4l3 3 3-3h4c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-6 16h-2v-2h2v2zm2.1-5.37l-.71.71c-.2.2-.51.2-.71 0l-.71-.71c-.2-.2-.2-.51 0-.71l1.41-1.41c.2-.2.51-.2.71 0l1.41 1.41c.2.2.2.51 0 .71l-.71.71zM18 10h-2V8h2v2z"/>
+                      <path d="M19 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h4l3 3 3-3h4c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-6 16h-2v-2h2v2zm2.1-5.37l-.71.71c-.2.2-.51.2-.71 0l-.71-.71c-.2-.2-.2-.51 0-.71l1.41-1.41c.2-.2.51-.2.71 0l1.41 1.41c.2.2.2.51 0 .71l-.71.71zM18 10h-2V8h2v2z" />
                     </svg>
                   </div>
                 )}
 
-                <div className={`max-w-[80%] rounded-2xl p-4 ${
-                  message.role === 'assistant' 
-                    ? 'bg-white border border-gray-100' 
+                {message.role === 'assistant' && (
+                  <div className={`max-w-[80%] rounded-2xl p-4 ${message.role === 'assistant'
+                    ? 'bg-white border border-gray-100'
                     : 'bg-gradient-to-br from-purple-600 to-indigo-600 text-white'
-                } ${message.isStreaming ? 'animate-pulse' : ''}`}>
-                  <ReactMarkdown
-                    components={MarkdownComponents}
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeRaw]}
-                  >
+                    } ${message.isStreaming ? 'animate-pulse' : ''}`}>
+                    <ReactMarkdown
+                      components={MarkdownComponents}
+                      remarkPlugins={[remarkGfm]}
+                      rehypePlugins={[rehypeRaw]}
+                    >
+                      {Parse(message.content)}
+                    </ReactMarkdown>
+                    {message.isStreaming && (
+                      <span className="ml-2 animate-blink">...</span>
+                    )}
+                  </div>
+                )}
+
+                {message.role !== 'assistant' && (
+                  <div className={`max-w-[80%] rounded-2xl p-4 bg-gradient-to-br from-purple-600 to-indigo-600 text-white`}>
+
                     {message.content}
-                  </ReactMarkdown>
-                  {message.isStreaming && (
-                    <span className="ml-2 animate-blink">...</span>
-                  )}
-                </div>
+
+                  </div>
+                )}
+
               </div>
             ))}
           </div>
@@ -379,7 +370,7 @@ const handleStreamingResponse = async (response, isNewChat, tempChatId, tempAiMs
                   disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={loading}
               />
-              <button 
+              <button
                 onClick={handleSendMessage}
                 className="absolute right-2 top-2 bg-gradient-to-br from-purple-600 to-indigo-600 p-3 rounded-xl 
                   hover:opacity-90 transition-all duration-200 shadow-md flex items-center justify-center

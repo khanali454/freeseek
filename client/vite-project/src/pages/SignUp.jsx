@@ -23,7 +23,7 @@ function SignUp() {
         setLoading(true);
 
         try {
-            const response = await fetch('https://freeseek-server.vercel.app/signup', {
+            const response = await fetch('https://freeseek-server-fmbbc2bbftb6a7he.canadacentral-01.azurewebsites.net/signup', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

@@ -21,7 +21,7 @@ function Login() {
         setLoading(true);
 
         try {
-            const response = await fetch('https://freeseek-server.vercel.app/login', {
+            const response = await fetch('https://freeseek-server-fmbbc2bbftb6a7he.canadacentral-01.azurewebsites.net/login', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
