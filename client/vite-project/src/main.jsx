@@ -3,7 +3,7 @@ import './index.css'
 import { BrowserRouter, Routes, Route } from "react-router";
 import FreeSeek from './FreeSeek.jsx';
 import Login from './pages/Login.jsx';
-import SignUp from './pages/Signup.jsx';
+import SignUp from './pages/SignUp.jsx';
 
 createRoot(document.getElementById('root')).render(
   <BrowserRouter>
